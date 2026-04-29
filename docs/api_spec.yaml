@@ -1,0 +1,884 @@
+openapi: 3.0.3
+
+info:
+  title: Distributed Synchronization System API
+  description: >
+    REST API untuk Distributed Synchronization System yang mengimplementasikan
+    Raft Consensus, Distributed Lock Manager, Distributed Queue, dan Cache Coherence (MESI).
+    Semua write request harus dikirim ke node Leader. Jika dikirim ke Follower,
+    response 307 akan dikembalikan beserta URL Leader yang sebenarnya.
+  version: 1.0.0
+  contact:
+    name: Distributed Systems Course
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:8001
+    description: Node 1 (biasanya Leader awal)
+  - url: http://localhost:8002
+    description: Node 2
+  - url: http://localhost:8003
+    description: Node 3
+
+tags:
+  - name: Health
+    description: Status dan health check node
+  - name: Lock
+    description: Distributed Lock Manager (Raft-backed)
+  - name: Queue
+    description: Distributed Queue dengan Consistent Hashing
+  - name: Cache
+    description: Distributed Cache Coherence (MESI Protocol)
+  - name: Raft
+    description: Internal Raft RPC (dipakai antar node, bukan client)
+
+
+# PATHS
+
+
+paths:
+
+  
+  # HEALTH & STATUS
+  
+
+  /health:
+    get:
+      tags: [Health]
+      summary: Health check node
+      description: Dipakai Docker health check dan FailureDetector untuk memastikan node hidup.
+      responses:
+        '200':
+          description: Node aktif
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+              example:
+                status: ok
+                node_id: 1
+                role: leader
+
+  /status:
+    get:
+      tags: [Health]
+      summary: Status lengkap node
+      description: Menampilkan info Raft, status peer, lock aktif, queue, dan cache.
+      responses:
+        '200':
+          description: Status lengkap
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResponse'
+
+  
+  # LOCK MANAGER
+  
+
+  /lock/acquire:
+    post:
+      tags: [Lock]
+      summary: Minta lock untuk sebuah resource
+      description: >
+        Meminta exclusive atau shared lock. Hanya bisa dipanggil ke Leader.
+        Jika resource sedang di-lock oleh client lain, request akan di-retry
+        hingga max_retries kali. Deadlock detection berjalan otomatis.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LockAcquireRequest'
+            examples:
+              exclusive:
+                summary: Minta exclusive lock
+                value:
+                  resource: database-primary
+                  lock_type: exclusive
+                  client_id: service-A
+                  ttl: 30
+              shared:
+                summary: Minta shared lock (bisa dipegang banyak client)
+                value:
+                  resource: config-file
+                  lock_type: shared
+                  client_id: service-B
+                  ttl: 60
+      responses:
+        '200':
+          description: Hasil request lock
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LockAcquireResponse'
+              examples:
+                granted:
+                  summary: Lock berhasil
+                  value:
+                    status: granted
+                    resource: database-primary
+                    client_id: service-A
+                    message: Lock berhasil diperoleh
+                    lock_info:
+                      resource: database-primary
+                      lock_type: exclusive
+                      client_id: service-A
+                      node_id: 1
+                      acquired_at: 1714900000.0
+                      ttl: 30
+                      expires_at: 1714900030.0
+                denied:
+                  summary: Lock gagal karena deadlock
+                  value:
+                    status: denied
+                    resource: database-primary
+                    client_id: service-B
+                    message: "Deadlock: service-B -> service-A -> service-B"
+                    lock_info: null
+                timeout:
+                  summary: Lock timeout setelah max retries
+                  value:
+                    status: timeout
+                    resource: database-primary
+                    client_id: service-C
+                    message: Lock timeout setelah 10 percobaan
+                    lock_info: null
+        '307':
+          $ref: '#/components/responses/NotLeader'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '503':
+          $ref: '#/components/responses/NoLeader'
+
+  /lock/release:
+    post:
+      tags: [Lock]
+      summary: Lepas lock yang sedang dipegang
+      description: >
+        Melepas lock yang sebelumnya diperoleh oleh client_id untuk resource tertentu.
+        Command release dimasukkan ke Raft log agar semua node sinkron.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LockReleaseRequest'
+            example:
+              resource: database-primary
+              client_id: service-A
+      responses:
+        '200':
+          description: Hasil release lock
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LockReleaseResponse'
+              example:
+                status: released
+                resource: database-primary
+                message: Lock berhasil dilepas
+        '307':
+          $ref: '#/components/responses/NotLeader'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /lock/status:
+    get:
+      tags: [Lock]
+      summary: Lihat semua lock yang aktif
+      description: Return semua lock yang belum expired, dikelompokkan per resource.
+      responses:
+        '200':
+          description: Daftar lock aktif
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LockStatusResponse'
+              example:
+                locks:
+                  database-primary:
+                    - resource: database-primary
+                      lock_type: exclusive
+                      client_id: service-A
+                      node_id: 1
+                      acquired_at: 1714900000.0
+                      ttl: 30
+                      expires_at: 1714900030.0
+
+  
+  # QUEUE
+  
+
+  /queue/produce:
+    post:
+      tags: [Queue]
+      summary: Kirim pesan ke queue
+      description: >
+        Memasukkan pesan baru ke distributed queue. Node yang bertanggung jawab
+        atas queue ditentukan oleh consistent hashing dari nama queue.
+        Pesan di-persist ke Redis untuk recovery jika node crash.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProduceRequest'
+            example:
+              queue: order-processing
+              message:
+                order_id: ORD-001
+                product: Laptop
+                qty: 1
+              producer_id: api-gateway
+      responses:
+        '200':
+          description: Pesan berhasil masuk ke queue
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProduceResponse'
+              examples:
+                success:
+                  value:
+                    success: true
+                    message_id: 550e8400-e29b-41d4-a716-446655440000
+                failed:
+                  value:
+                    success: false
+                    error: Gagal submit ke Raft
+        '307':
+          $ref: '#/components/responses/NotLeader'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /queue/consume:
+    post:
+      tags: [Queue]
+      summary: Ambil pesan dari queue
+      description: >
+        Mengambil satu pesan dari antrian (FIFO). Pesan berpindah ke status
+        "in-flight" dan harus di-acknowledge dalam batas ack_timeout detik.
+        Jika tidak di-ACK, pesan akan dikembalikan ke antrian (at-least-once delivery).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConsumeRequest'
+            example:
+              queue: order-processing
+              consumer_id: worker-1
+              ack_timeout: 30
+      responses:
+        '200':
+          description: Pesan berhasil diambil atau queue kosong
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConsumeResponse'
+              examples:
+                success:
+                  summary: Ada pesan
+                  value:
+                    success: true
+                    message:
+                      message_id: 550e8400-e29b-41d4-a716-446655440000
+                      queue_name: order-processing
+                      payload:
+                        order_id: ORD-001
+                        product: Laptop
+                        qty: 1
+                      producer_id: api-gateway
+                      produced_at: 1714900000.0
+                      delivery_count: 1
+                      ack_deadline: 1714900030.0
+                empty:
+                  summary: Queue kosong
+                  value:
+                    success: false
+                    error: Queue kosong
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /queue/ack:
+    post:
+      tags: [Queue]
+      summary: Acknowledge pesan yang sudah diproses
+      description: >
+        Konfirmasi bahwa pesan sudah berhasil diproses oleh consumer.
+        Setelah ACK, pesan dihapus dari sistem dan tidak akan dikirim ulang.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AckRequest'
+            example:
+              message_id: 550e8400-e29b-41d4-a716-446655440000
+              consumer_id: worker-1
+      responses:
+        '200':
+          description: Hasil acknowledge
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AckResponse'
+              examples:
+                success:
+                  value:
+                    success: true
+                not_found:
+                  value:
+                    success: false
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /queue/status:
+    get:
+      tags: [Queue]
+      summary: Status semua queue di node ini
+      description: Menampilkan kedalaman antrian dan jumlah pesan in-flight per queue.
+      responses:
+        '200':
+          description: Status queue
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueueStatusResponse'
+              example:
+                node_id: 1
+                queues:
+                  order-processing:
+                    depth: 42
+                    in_flight: 3
+                  email-notifications:
+                    depth: 7
+                    in_flight: 1
+                hash_ring_responsible:
+                  - order-processing
+
+  
+  # CACHE
+  
+
+  /cache/set:
+    put:
+      tags: [Cache]
+      summary: Simpan nilai ke distributed cache
+      description: >
+        Menyimpan key-value ke cache dengan protokol MESI.
+        Entry baru mendapat state EXCLUSIVE, update mendapat state MODIFIED.
+        Operasi direplikasi ke semua node via Raft log.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CacheSetRequest'
+            examples:
+              with_ttl:
+                summary: Set dengan TTL
+                value:
+                  key: user:123
+                  value:
+                    name: Budi
+                    role: admin
+                  ttl: 300
+              without_ttl:
+                summary: Set tanpa TTL (tidak expired)
+                value:
+                  key: config:feature-flags
+                  value:
+                    dark_mode: true
+                    beta: false
+      responses:
+        '200':
+          description: Hasil operasi set
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CacheSetResponse'
+              example:
+                success: true
+        '307':
+          $ref: '#/components/responses/NotLeader'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /cache/get/{key}:
+    get:
+      tags: [Cache]
+      summary: Ambil nilai dari cache
+      description: >
+        Mengambil nilai dari local cache. Jika tidak ada (miss) atau entry invalid/expired,
+        nilai tidak dikembalikan. Client perlu fetch dari sumber data asli saat miss.
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema:
+            type: string
+          example: user:123
+      responses:
+        '200':
+          description: Hasil lookup cache
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CacheGetResponse'
+              examples:
+                hit:
+                  summary: Cache hit
+                  value:
+                    hit: true
+                    key: user:123
+                    value:
+                      name: Budi
+                      role: admin
+                miss:
+                  summary: Cache miss
+                  value:
+                    hit: false
+                    key: user:456
+                    value: null
+
+  /cache/invalidate/{key}:
+    delete:
+      tags: [Cache]
+      summary: Invalidasi cache entry
+      description: >
+        Menandai entry sebagai INVALID di semua node via Raft log,
+        kemudian mengirim notifikasi tambahan via Redis pub/sub untuk
+        memastikan semua node langsung menginvalidasi entry-nya.
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema:
+            type: string
+          example: user:123
+      responses:
+        '200':
+          description: Hasil invalidasi
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CacheInvalidateResponse'
+              example:
+                success: true
+                key: user:123
+        '307':
+          $ref: '#/components/responses/NotLeader'
+
+  /cache/status:
+    get:
+      tags: [Cache]
+      summary: Status dan statistik cache
+      description: Menampilkan ukuran cache, hit rate, dan konfigurasi yang dipakai.
+      responses:
+        '200':
+          description: Status cache
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CacheStatusResponse'
+              example:
+                node_id: 1
+                protocol: MESI
+                replacement_policy: LRU
+                size: 247
+                max_size: 1000
+                hit_count: 8432
+                miss_count: 193
+                hit_rate: 0.9778
+
+  
+  # RAFT RPC (internal antar node)
+  
+
+  /raft/vote:
+    post:
+      tags: [Raft]
+      summary: "[Internal] RequestVote RPC"
+      description: Dipakai oleh Candidate untuk meminta suara dari node lain saat election.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VoteRequest'
+      responses:
+        '200':
+          description: Respons voting
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VoteResponse'
+
+  /raft/append:
+    post:
+      tags: [Raft]
+      summary: "[Internal] AppendEntries RPC"
+      description: Dipakai Leader untuk replikasi log entries dan mengirim heartbeat ke Follower.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AppendEntriesRequest'
+      responses:
+        '200':
+          description: Respons append entries
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AppendEntriesResponse'
+
+
+# COMPONENTS
+
+
+components:
+
+  responses:
+    NotLeader:
+      description: Node ini bukan Leader, redirect ke Leader
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: string
+                example: Bukan leader
+              leader_id:
+                type: integer
+                example: 2
+              leader_url:
+                type: string
+                example: http://localhost:8002
+    BadRequest:
+      description: Request body tidak valid atau field wajib tidak ada
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: string
+    NoLeader:
+      description: Cluster tidak memiliki Leader saat ini (sedang election)
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: string
+                example: Tidak ada leader saat ini, coba lagi nanti
+
+  schemas:
+
+    # --- Health ---
+
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [ok]
+        node_id:
+          type: integer
+        role:
+          type: string
+          enum: [leader, follower, candidate]
+
+    StatusResponse:
+      type: object
+      properties:
+        raft:
+          type: object
+          properties:
+            node_id: { type: integer }
+            role: { type: string }
+            current_term: { type: integer }
+            current_leader: { type: integer, nullable: true }
+            log_length: { type: integer }
+            commit_index: { type: integer }
+            last_applied: { type: integer }
+            peers: { type: array, items: { type: integer } }
+        peers:
+          type: object
+          additionalProperties:
+            type: string
+            enum: [alive, suspect, dead]
+        locks:
+          type: object
+        queue:
+          type: object
+        cache:
+          type: object
+
+    # --- Lock ---
+
+    LockAcquireRequest:
+      type: object
+      required: [resource, client_id]
+      properties:
+        resource:
+          type: string
+          description: Nama resource yang ingin di-lock
+          example: database-primary
+        lock_type:
+          type: string
+          enum: [exclusive, shared]
+          default: exclusive
+        client_id:
+          type: string
+          description: ID unik client yang meminta lock
+          example: service-A
+        ttl:
+          type: integer
+          description: Waktu hidup lock dalam detik
+          default: 30
+          minimum: 1
+          maximum: 300
+
+    LockAcquireResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [granted, denied, timeout]
+        resource:
+          type: string
+        client_id:
+          type: string
+        message:
+          type: string
+        lock_info:
+          $ref: '#/components/schemas/LockInfo'
+          nullable: true
+
+    LockReleaseRequest:
+      type: object
+      required: [resource, client_id]
+      properties:
+        resource:
+          type: string
+        client_id:
+          type: string
+
+    LockReleaseResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [released, denied]
+        resource:
+          type: string
+        message:
+          type: string
+
+    LockStatusResponse:
+      type: object
+      properties:
+        locks:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              $ref: '#/components/schemas/LockInfo'
+
+    LockInfo:
+      type: object
+      properties:
+        resource: { type: string }
+        lock_type: { type: string, enum: [exclusive, shared] }
+        client_id: { type: string }
+        node_id: { type: integer }
+        acquired_at: { type: number }
+        ttl: { type: integer }
+        expires_at: { type: number }
+
+    # --- Queue ---
+
+    ProduceRequest:
+      type: object
+      required: [queue, message, producer_id]
+      properties:
+        queue:
+          type: string
+          description: Nama queue tujuan
+          example: order-processing
+        message:
+          type: object
+          description: Payload pesan (JSON bebas)
+        producer_id:
+          type: string
+          description: ID producer
+          example: api-gateway
+
+    ProduceResponse:
+      type: object
+      properties:
+        success: { type: boolean }
+        message_id:
+          type: string
+          format: uuid
+          description: ID unik pesan (ada jika success=true)
+        error:
+          type: string
+          description: Pesan error (ada jika success=false)
+
+    ConsumeRequest:
+      type: object
+      required: [queue, consumer_id]
+      properties:
+        queue:
+          type: string
+          example: order-processing
+        consumer_id:
+          type: string
+          example: worker-1
+        ack_timeout:
+          type: integer
+          default: 30
+          description: Detik batas waktu untuk ACK sebelum pesan dikembalikan ke antrian
+
+    ConsumeResponse:
+      type: object
+      properties:
+        success: { type: boolean }
+        message:
+          $ref: '#/components/schemas/Message'
+          nullable: true
+        error:
+          type: string
+          nullable: true
+
+    AckRequest:
+      type: object
+      required: [message_id, consumer_id]
+      properties:
+        message_id:
+          type: string
+          format: uuid
+        consumer_id:
+          type: string
+
+    AckResponse:
+      type: object
+      properties:
+        success: { type: boolean }
+
+    QueueStatusResponse:
+      type: object
+      properties:
+        node_id: { type: integer }
+        queues:
+          type: object
+          additionalProperties:
+            type: object
+            properties:
+              depth: { type: integer }
+              in_flight: { type: integer }
+        hash_ring_responsible:
+          type: array
+          items: { type: string }
+
+    Message:
+      type: object
+      properties:
+        message_id: { type: string, format: uuid }
+        queue_name: { type: string }
+        payload: { type: object }
+        producer_id: { type: string }
+        produced_at: { type: number }
+        delivery_count: { type: integer }
+        ack_deadline: { type: number, nullable: true }
+
+    # --- Cache ---
+
+    CacheSetRequest:
+      type: object
+      required: [key, value]
+      properties:
+        key:
+          type: string
+          example: user:123
+        value:
+          description: Nilai yang disimpan (JSON bebas)
+        ttl:
+          type: integer
+          nullable: true
+          description: TTL dalam detik, null berarti tidak expired
+
+    CacheSetResponse:
+      type: object
+      properties:
+        success: { type: boolean }
+
+    CacheGetResponse:
+      type: object
+      properties:
+        hit: { type: boolean }
+        key: { type: string }
+        value:
+          nullable: true
+          description: Nilai cache jika hit, null jika miss
+
+    CacheInvalidateResponse:
+      type: object
+      properties:
+        success: { type: boolean }
+        key: { type: string }
+
+    CacheStatusResponse:
+      type: object
+      properties:
+        node_id: { type: integer }
+        protocol: { type: string, example: MESI }
+        replacement_policy: { type: string, enum: [LRU, LFU] }
+        size: { type: integer }
+        max_size: { type: integer }
+        hit_count: { type: integer }
+        miss_count: { type: integer }
+        hit_rate: { type: number, format: float }
+
+    # --- Raft Internal ---
+
+    VoteRequest:
+      type: object
+      properties:
+        term: { type: integer }
+        candidate_id: { type: integer }
+        last_log_index: { type: integer }
+        last_log_term: { type: integer }
+
+    VoteResponse:
+      type: object
+      properties:
+        term: { type: integer }
+        vote_granted: { type: boolean }
+
+    AppendEntriesRequest:
+      type: object
+      properties:
+        term: { type: integer }
+        leader_id: { type: integer }
+        prev_log_index: { type: integer }
+        prev_log_term: { type: integer }
+        entries:
+          type: array
+          items: { type: object }
+        leader_commit: { type: integer }
+
+    AppendEntriesResponse:
+      type: object
+      properties:
+        term: { type: integer }
+        success: { type: boolean }
+        match_index: { type: integer }

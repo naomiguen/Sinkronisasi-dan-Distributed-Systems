@@ -1,0 +1,156 @@
+version: '3.8'
+
+
+# Distributed Sync System - Docker Compose
+#
+# Cara menjalankan:
+#   docker-compose up --build
+#
+# Scale node (tambah node ke-4):
+#   docker-compose up --scale node=4
+#
+# Jalankan hanya Redis dulu (untuk development lokal):
+#   docker-compose up redis
+
+networks:
+  # Jaringan internal untuk komunikasi antar node
+  cluster-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/24
+
+volumes:
+  redis-data:
+    driver: local
+
+services:
+
+  
+  # Redis - Shared Distributed State
+  # Semua node membaca/menulis state ke sini
+  
+  redis:
+    image: redis:7.2-alpine
+    container_name: dist-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+      - ./docker/redis.conf:/usr/local/etc/redis/redis.conf
+    command: redis-server /usr/local/etc/redis/redis.conf
+    networks:
+      cluster-net:
+        ipv4_address: 172.20.0.10
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  
+  # Node 1 - akan menjadi Leader pertama
+  
+  node-1:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.node
+    container_name: dist-node-1
+    env_file: .env
+    environment:
+      NODE_ID: "1"
+      NODE_HOST: "0.0.0.0"
+      NODE_PORT: "8001"
+      CLUSTER_NODES: "node-1:8001,node-2:8002,node-3:8003"
+      REDIS_HOST: "redis"
+      METRICS_PORT: "9091"
+    ports:
+      - "8001:8001"     # API port
+      - "9091:9091"     # Prometheus metrics
+    networks:
+      cluster-net:
+        ipv4_address: 172.20.0.11
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    volumes:
+      - ./src:/app/src   # hot-reload saat development
+
+  
+  # Node 2 - Follower
+  
+  node-2:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.node
+    container_name: dist-node-2
+    env_file: .env
+    environment:
+      NODE_ID: "2"
+      NODE_HOST: "0.0.0.0"
+      NODE_PORT: "8002"
+      CLUSTER_NODES: "node-1:8001,node-2:8002,node-3:8003"
+      REDIS_HOST: "redis"
+      METRICS_PORT: "9092"
+    ports:
+      - "8002:8002"
+      - "9092:9092"
+    networks:
+      cluster-net:
+        ipv4_address: 172.20.0.12
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    volumes:
+      - ./src:/app/src
+
+  
+  # Node 3 - Follower
+  
+  node-3:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.node
+    container_name: dist-node-3
+    env_file: .env
+    environment:
+      NODE_ID: "3"
+      NODE_HOST: "0.0.0.0"
+      NODE_PORT: "8003"
+      CLUSTER_NODES: "node-1:8001,node-2:8002,node-3:8003"
+      REDIS_HOST: "redis"
+      METRICS_PORT: "9093"
+    ports:
+      - "8003:8003"
+      - "9093:9093"
+    networks:
+      cluster-net:
+        ipv4_address: 172.20.0.13
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    volumes:
+      - ./src:/app/src
+
+  
+  # Prometheus - Metrics Collector 
+  
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: dist-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./docker/prometheus.yml:/etc/prometheus/prometheus.yml
+    networks:
+      - cluster-net
+    depends_on:
+      - node-1
+      - node-2
+      - node-3
+    profiles:
+      - monitoring   # hanya jalan kalau: docker-compose --profile monitoring up

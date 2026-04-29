@@ -1,0 +1,25 @@
+# Environment files
+.env
+.env.*
+
+.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtualenv
+venv/
+env/
+
+# Byte-compiled / optimized / DLL files
+*.pyc
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# VS Code
+.vscode/

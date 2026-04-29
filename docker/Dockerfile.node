@@ -1,0 +1,40 @@
+FROM python:3.11-slim
+
+# Metadata
+LABEL maintainer="Distributed Sync System"
+LABEL description="Node image untuk distributed synchronization system"
+
+# Set working directory
+WORKDIR /app
+
+# Install system dependencies
+# gcc dibutuhkan untuk compile beberapa Python packages
+RUN apt-get update && apt-get install -y \
+    gcc \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+
+# (layer ini di-cache Docker jika requirements.txt tidak berubah)
+COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
+
+# Copy source code
+COPY src/ ./src/
+COPY .env.example .env.example
+
+# Buat direktori untuk logs
+RUN mkdir -p /app/logs
+
+# Port yang diekspos
+# 8000-8003: API & Raft RPC
+# 9090-9093: Prometheus metrics
+EXPOSE 8001 8002 8003 9091 9092 9093
+
+# Health check - cek apakah node merespons
+HEALTHCHECK --interval=10s --timeout=5s --start-period=10s --retries=3 \
+    CMD curl -f http://localhost:${NODE_PORT}/health || exit 1
+
+# Entrypoint - jalankan node
+CMD ["python", "-m", "src.nodes.base_node"]

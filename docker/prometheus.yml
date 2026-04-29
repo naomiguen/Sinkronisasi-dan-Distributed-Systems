@@ -1,0 +1,58 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+  scrape_timeout: 4s
+
+  external_labels:
+    system: distributed-sync-system
+    environment: development
+
+
+
+
+scrape_configs:
+
+  # Prometheus scrape dirinya sendiri
+  - job_name: prometheus
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # Node 1
+  - job_name: dist-node-1
+    static_configs:
+      - targets: ['node-1:9091']
+    labels:
+      node_id: '1'
+    metrics_path: /metrics
+    scrape_interval: 5s
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: node-1
+
+  # Node 2
+  - job_name: dist-node-2
+    static_configs:
+      - targets: ['node-2:9092']
+    labels:
+      node_id: '2'
+    metrics_path: /metrics
+    scrape_interval: 5s
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: node-2
+
+  # Node 3
+  - job_name: dist-node-3
+    static_configs:
+      - targets: ['node-3:9093']
+    labels:
+      node_id: '3'
+    metrics_path: /metrics
+    scrape_interval: 5s
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: node-3
+
