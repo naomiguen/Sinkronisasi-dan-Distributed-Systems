@@ -1,21 +1,3 @@
-"""
-Load Test Scenarios for Distributed Synchronization System
-
-Skenario benchmark untuk mengukur:
-- Throughput (ops/detik)
-- Latency (waktu response)
-- Scalability (performa seiring penambahan node)
-- Failure handling (ketahanan terhadap kegagalan node)
-
-Cara menjalankan:
-    # Load test dengan Locust (web interface)
-    locust -f benchmarks/load_test_scenarios.py --host=http://localhost:8001
-    
-    # Load test dengan CLI (headless)
-    locust -f benchmarks/load_test_scenarios.py --host=http://localhost:8001 \
-           --headless -u 100 -r 10 -t 60s --csv=results/load_test
-"""
-
 import asyncio
 import json
 import random
@@ -29,19 +11,12 @@ import threading
 import aiohttp
 
 
-# ============================================================================
 # CONFIGURATION
-# ============================================================================
-
 BASE_URL = "http://localhost:8001"
 NUM_NODES = 3
 TEST_DURATION = 60  # detik
 
-
-# ============================================================================
 # TEST RESULTS DATA CLASS
-# ============================================================================
-
 @dataclass
 class TestResult:
     """Hasil dari satu skenario test."""
@@ -96,10 +71,8 @@ class TestResult:
         }
 
 
-# ============================================================================
-# HTTP CLIENT
-# ============================================================================
 
+# HTTP CLIENT
 class HttpClient:
     """Async HTTP client untuk load testing."""
     
@@ -178,10 +151,7 @@ class HttpClient:
             return False, latency
 
 
-# ============================================================================
 # TEST SCENARIOS
-# ============================================================================
-
 async def test_lock_acquire_release(client: HttpClient, num_requests: int, 
                                      concurrent: int) -> TestResult:
     """
@@ -463,11 +433,7 @@ async def test_failure_recovery(client: HttpClient) -> TestResult:
     result.throughput = baseline_throughput
     return result
 
-
-# ============================================================================
 # BENCHMARK RUNNER
-# ============================================================================
-
 async def run_benchmark(scenario: Callable, **kwargs) -> TestResult:
     """Jalankan satu skenario benchmark."""
     print(f"\n{'='*60}")
@@ -565,9 +531,9 @@ async def run_all_benchmarks():
     return results
 
 
-# ============================================================================
+
 # MAIN
-# ============================================================================
+
 
 if __name__ == "__main__":
     print("Starting benchmarks...")

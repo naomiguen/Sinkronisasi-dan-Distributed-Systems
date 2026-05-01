@@ -172,7 +172,7 @@ class TestTTLExpiry:
         expired_lock = lm._get_lock("cache", "B")
         expired_lock.expires_at = time.time() - 1
 
-        all_locks = lm.get_all_locks()
+        all_locks = await lm.get_all_locks()
         assert "db" in all_locks
         assert "cache" not in all_locks
 

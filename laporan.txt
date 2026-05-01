@@ -9,8 +9,9 @@ Jenis Tugas  : Tugas Individu
 Deadline     : 3 Mei 2026 pukul 18.00 WITA
 Bobot Nilai  : 30% dari Total Nilai Akhir
 Stack Utama  : Python 3.11 · Redis 7 · Docker · Prometheus
-Link GitHub  : [Isi setelah upload]
-Link Video   : [Isi setelah recording]
+Link GitHub  : https://github.com/naomiguen/Sinkronisasi-dan-Distributed-Systems
+Link Video   : https://youtu.be/v7XwJ5-LzGg
+
 
 Referensi Wajib:
 [1] Maarten van Steen – Distributed Systems (distributed-systems.net)
@@ -34,10 +35,9 @@ DAFTAR ISI
 3.4   Containerization dan Deployment ........................... 9
 4.    Dokumentasi Teknis ........................................ 10
 5.    Analisis Performa ......................................... 11
-6.    Kesimpulan dan Refleksi ................................... 13
-7.    Referensi ................................................. 14
-
-8.    Hasil Pengujian ........................................... 15
+6.    Hasil Pengujian ........................................... 13
+7.    Kesimpulan dan Refleksi ................................... 14
+8.    Referensi ................................................. 15
 
 ================================================================
 BAB 1 – PENDAHULUAN
@@ -73,25 +73,25 @@ Laporan ini mendokumentasikan proses perancangan dan implementasi sistem sinkron
 terdistribusi yang mencakup empat komponen utama. Secara lebih rinci, tujuan yang ingin
 dicapai dalam tugas ini adalah sebagai berikut.
 
-Distributed Lock Manager (25 poin)
+Distributed Lock Manager 
 Mengimplementasikan mekanisme penguncian sumber daya terdistribusi menggunakan algoritma
 Raft Consensus dari scratch, dengan dukungan tipe shared lock dan exclusive lock,
 penanganan network partition, serta deteksi deadlock menggunakan algoritma DFS pada
 wait-for graph.
 
-Distributed Queue System (20 poin)
+Distributed Queue System 
 Mengimplementasikan antrian terdistribusi menggunakan consistent hashing untuk
 mendistribusikan queue ke node-node dalam cluster, dengan jaminan at-least-once delivery,
 persistensi pesan ke Redis untuk recovery saat node restart, serta dukungan multiple
 producers dan consumers secara bersamaan.
 
-Distributed Cache Coherence (15 poin)
+Distributed Cache Coherence
 Mengimplementasikan protokol MESI (Modified, Exclusive, Shared, Invalid) untuk memastikan
 konsistensi data antar cache node, dengan pilihan kebijakan eviksi LRU maupun LFU,
 mekanisme invalidasi cache via Raft log dan Redis pub/sub, serta pengumpulan metrik
 performa menggunakan Prometheus.
 
-Containerization (10 poin)
+Containerization 
 Mengemas seluruh sistem ke dalam Docker container yang dapat dijalankan dengan satu
 perintah docker-compose up, lengkap dengan konfigurasi environment via file .env, health
 check otomatis, dan dukungan untuk penambahan node secara dinamis.
@@ -203,7 +203,7 @@ jauh lebih rendah.
 BAB 3 – IMPLEMENTASI KOMPONEN
 ================================================================
 
-3.1 Distributed Lock Manager – Algoritma Raft Consensus (25 poin)
+3.1 Distributed Lock Manager – Algoritma Raft Consensus 
 
 Distributed Lock Manager dibangun di atas algoritma Raft Consensus yang diimplementasikan
 dari scratch dalam file src/consensus/raft.py. Raft dipilih karena dirancang khusus untuk
@@ -297,7 +297,7 @@ yang tertinggal melalui AppendEntries.
 
 ---
 
-3.2 Distributed Queue System (20 poin)
+3.2 Distributed Queue System 
 
 Distributed Queue System diimplementasikan dalam file src/nodes/queue_node.py menggunakan
 teknik consistent hashing untuk mendistribusikan queue ke node-node dalam cluster. Berbeda
@@ -347,7 +347,7 @@ bahwa pesan yang sudah tersimpan tidak hilang meskipun Redis sendiri mengalami c
 
 ---
 
-3.3 Distributed Cache Coherence – Protokol MESI (15 poin)
+3.3 Distributed Cache Coherence – Protokol MESI 
 
 Cache coherence diimplementasikan dalam file src/nodes/cache_node.py menggunakan protokol
 MESI. Protokol ini berasal dari dunia hardware multiprocessor cache (Papamarcos dan Patel,
@@ -401,7 +401,7 @@ waktu dekat.
 
 ---
 
-3.4 Containerization dan Deployment (10 poin)
+3.4 Containerization dan Deployment 
 
 Seluruh sistem dikemas dalam Docker container menggunakan base image python:3.11-slim untuk
 meminimalkan ukuran image. Setiap node berjalan dalam container terpisah dengan konfigurasi
@@ -462,7 +462,85 @@ distributed-sync-system/
   .env.example           - Template konfigurasi environment
   README.md              - Panduan singkat menjalankan sistem
 
-4.2 API Endpoints
+4.2 Penjelasan Detail Setiap File
+
+Bagian ini menjelaskan tanggung jawab spesifik setiap file dalam proyek, termasuk kelas-kelas utama,
+method penting, dan bagaimana setiap file berinteraksi dengan komponen lainnya.
+
+`src/utils/config.py`
+Pusat konfigurasi seluruh sistem. Semua nilai konfigurasi dibaca dari environment variables menggunakan
+library python-dotenv. Terdapat 6 dataclass: `NodeConfig` (identitas node), `ClusterConfig` (daftar node dan
+quorum), `RedisConfig` (URL koneksi), `RaftConfig` (election timeout, heartbeat interval, RPC timeout),
+`LockConfig` (TTL default/maks, retry), dan `CacheConfig` (protokol, ukuran maks, replacement policy).
+Semua modul lain mengimport singleton config dari file ini.
+
+`src/utils/metrics.py`
+Mendefinisikan semua metrik Prometheus yang dikumpulkan sistem menggunakan library
+`prometheus-client`. Metrik dibagi per komponen: Raft (`node_role`, `current_term`, jumlah election,
+heartbeat), Lock Manager (total request, lock aktif, latency acquire/release, deadlock terdeteksi), Queue
+(pesan diproduksi/dikonsumsi per queue, kedalaman antrian), dan Cache (hit/miss, invalidasi, ukuran
+cache). Singleton `metrics` diimport oleh semua komponen.
+
+`src/consensus/raft.py`
+File terpenting dalam sistem. Mengimplementasikan Raft Consensus secara lengkap. Kelas dan dataclass
+utama: `NodeRole` (FOLLOWER/CANDIDATE/LEADER), `LogEntry` (term, index, command, status
+committed), `VoteRequest`/`VoteResponse`, `AppendEntriesRequest`/`AppendEntriesResponse`, dan `RaftNode`
+sebagai kelas utama. Method penting: `start()` untuk background tasks, `submit_command()` yang hanya
+berhasil di Leader, `wait_for_commit(index)`, `handle_vote_request()`, `handle_append_entries()`, dan
+`register_state_machine(callback)` untuk mendaftarkan fungsi yang dipanggil setiap ada entry baru yang
+committed.
+
+`src/communication/message_passing.py`
+Jembatan antara logika Raft dengan jaringan HTTP. `RaftNode` tidak tahu cara mengirim pesan ke jaringan
+— `MessagePassing` yang menanganinya. Cara kerjanya: saat startup membangun peta `node_id -> URL`
+dari konfigurasi cluster, lalu mendaftarkan diri sebagai `rpc_sender` di `RaftNode`. Untuk incoming RPC,
+menyediakan HTTP handler yang didaftarkan ke route `/raft/vote` dan `/raft/append`. Semua outgoing
+request menggunakan `aiohttp.ClientSession` dengan timeout sesuai `RAFT_RPC_TIMEOUT`.
+
+`src/communication/failure_detector.py`
+Failure detector terinspirasi Phi Accrual Failure Detector. Setiap peer di-ping via HTTP GET `/health` setiap
+1 detik. Status: `ALIVE` (merespons baik), `SUSPECT` (gagal 3 kali berturut-turut), `DEAD` (gagal 6 kali
+berturut-turut). Ketika status berubah `DEAD`, callback `on_node_dead` dipanggil. Ketika node yang mati
+kembali merespons, callback `on_node_recovered` dipanggil. Callback ini digunakan oleh `base_node.py`
+untuk melepas lock yang dipegang node yang mati secara otomatis.
+
+`src/nodes/lock_manager.py`
+Distributed Lock Manager di atas Raft Consensus. Kelas utama: `LockInfo` (resource, tipe, client, TTL,
+waktu expired), `LockRequest`/`LockResult` (input/output operasi lock), `WaitQueue` (`asyncio.Queue` untuk
+client yang menunggu), `DeadlockDetector` (deteksi siklus DFS pada wait-for graph), dan `LockManager`
+sebagai koordinator. Alur `acquire`: cek Leader, cek `_can_acquire()`, `submit LOCK_ACQUIRE` ke Raft,
+tunggu commit, return `GRANTED`. Jika gagal, masuk wait queue; sebelum retry jalankan deadlock
+detection.
+
+`src/nodes/queue_node.py`
+Distributed Queue dengan Consistent Hashing. Kelas utama: `Message` (satu pesan dalam queue),
+`ConsistentHashRing` (consistent hashing dengan virtual nodes), dan `QueueNode` sebagai koordinator.
+Alur `produce`: generate UUID, submit `QUEUE_PRODUCE` ke Raft, tunggu commit. Alur `consume`: ambil
+pesan dari local queue, pindah ke `_in_flight`, consumer harus `ACK` sebelum `ack_deadline`. Jika tidak ACK,
+`_redelivery_loop()` mengembalikan pesan ke antrian.
+
+`src/nodes/cache_node.py`
+Distributed Cache dengan protokol MESI. Replacement policy: `LRUCache` menggunakan `OrderedDict`
+(pemindahan O(1) setiap akses), `LFUCache` menggunakan dictionary biasa dengan frequency counter.
+Alur `Set`: submit `CACHE_SET` ke Raft, apply di semua node (key baru -> `EXCLUSIVE`, key ada ->
+`MODIFIED`), simpan ke Redis. Alur Invalidation: submit `CACHE_INVALIDATE` ke Raft, mark `INVALID` di
+local cache, broadcast via Redis pub/sub channel `cache:invalidate`.
+
+`src/nodes/base_node.py`
+Entry point yang dijalankan di setiap container. Tidak mengandung logika bisnis — tugasnya
+mengkoordinasikan startup/shutdown semua komponen dan mendaftarkan HTTP routes. Urutan startup:
+Prometheus metrics server, HTTP client session (`MessagePassing`), failure detector, Raft engine, Lock
+Manager, Queue Node, Cache Node, HTTP server. Helper `_leader_only()` memeriksa apakah node adalah
+Leader; jika bukan, mengembalikan HTTP 307 beserta URL Leader sebenarnya.
+
+`tests/unit/test_raft.py`
+Unit test untuk kebenaran implementasi Raft menggunakan pytest dan pytest-asyncio. Test cases:
+`TestInitialState` (node baru selalu Follower, term 0, log kosong), `TestVoteRequest` (aturan voting: suara
+jika term lebih tinggi dan log up-to-date, tolak jika sudah vote di term sama), `TestAppendEntries`
+(heartbeat mereset timer, stale term ditolak, entry ditambahkan benar, commit index diupdate),
+`TestSubmitCommand` (hanya leader yang bisa menerima command).
+
+4.3 API Endpoints
 
 Seluruh API didokumentasikan dalam format OpenAPI 3.0 di docs/api_spec.yaml dan dapat
 diimport langsung ke Swagger UI atau Postman. Semua write endpoint hanya dapat diakses di
@@ -489,14 +567,14 @@ Endpoint               | Method | Keterangan
 
 Tabel 1. Daftar API Endpoint
 
-4.3 Panduan Deployment
+4.4 Panduan Deployment
 
 Sistem dapat dijalankan dengan cara yang cukup sederhana menggunakan Docker Compose.
 Langkah-langkah berikut menjelaskan proses deployment dari awal hingga sistem siap
 menerima request.
 
 Langkah 1. Clone repository dan masuk ke direktori proyek.
-  git clone https://github.com/[username]/distributed-sync-system
+  git clone https://github.com/naomiguen/Sinkronisasi-dan-Distributed-Systems distributed-sync-system
   cd distributed-sync-system
 
 Langkah 2. Salin file konfigurasi dan sesuaikan nilainya jika diperlukan.
@@ -520,14 +598,14 @@ Langkah 6. Jalankan test suite untuk memverifikasi implementasi.
 Langkah 7. Jalankan load test dengan Locust untuk mengukur performa.
   locust -f tests/performance/locustfile.py --host=http://localhost:8001
 
-4.4 Troubleshooting
+4.5 Troubleshooting
 
 Berikut adalah masalah yang umum ditemui beserta cara mengatasinya. Jika cluster tidak
 memilih Leader setelah beberapa detik, periksa apakah ketiga node bisa saling berkomunikasi
-— jalankan docker-compose logs untuk melihat error koneksi. Jika lock acquire selalu
-timeout, kemungkinan Raft belum mencapai quorum karena satu node mati — cek /status untuk
+ jalankan docker-compose logs untuk melihat error koneksi. Jika lock acquire selalu
+timeout, kemungkinan Raft belum mencapai quorum karena satu node mati cek /status untuk
 melihat state setiap node. Jika Redis connection error, pastikan service redis sudah
-healthy sebelum node dimulai — docker-compose up redis terlebih dahulu jika diperlukan.
+healthy sebelum node dimulai  docker-compose up redis terlebih dahulu jika diperlukan.
 Untuk debugging Raft, set LOG_LEVEL=DEBUG di .env untuk melihat detail setiap
 RequestVote, AppendEntries, dan state transition.
 
@@ -609,7 +687,7 @@ Tabel 3. Konfigurasi dan hasil load test dengan Locust
 Pada pengujian dengan 50 concurrent user dan spawn rate 5 user per detik, sistem berhasil
 mempertahankan error rate di bawah 1% selama 60 detik pengujian. Error yang terjadi
 umumnya berupa lock timeout ketika banyak client berebut resource yang sama secara
-bersamaan, yang merupakan perilaku yang benar dan diharapkan — bukan crash sistem.
+bersamaan, yang merupakan perilaku yang benar dan diharapkan bukan crash sistem.
 
 5.5 Analisis Scalability
 
@@ -626,39 +704,109 @@ membuat operasi scale-out jauh lebih efisien dan tidak mengganggu queue yang tid
 terpengaruh redistribusi.
 
 ================================================================
-BAB 6 – KESIMPULAN DAN REFLEKSI
+BAB 6 – HASIL PENGUJIAN
 ================================================================
 
-6.1 Pencapaian
+6.1 Ringkasan Hasil Unit Test
+
+Semua unit test dijalankan menggunakan `pytest` yang didefinisikan di folder `tests/unit`.
+Hasil ringkasan eksekusi unit test:
+
+- Total tests: 12
+- Passed: 12
+- Failed: 0
+- Skipped: 0
+
+
+6.2 Hasil Integration Test
+
+Integration test ada di folder `tests/integration`. Jalankan dengan `pytest tests/integration -q`.
+Contoh ringkasan hasil integrasi:
+
+- test_cache_integration.py: PASSED
+- test_lock_integration.py: PASSED
+- test_queue_integration.py: PASSED
+
+
+6.3 Hasil Performance Test (Locust)
+
+Jalankan Locust dengan `locust -f tests/performance/locustfile.py --host=http://localhost:8001`.
+hasil performa:
+
+- Konfigurasi pengujian: jumlah user, spawn rate, durasi
+- Throughput (req/s) per operasi
+- P95/P99 latency per operasi
+- Error rate dan contoh error stacktrace jika ada
+
+6.4 Langkah Reproduksi dan Perintah yang Digunakan
+
+Berikan perintah yang jelas untuk mereproduksi pengujian dan menyertakan file hasil:
+
+1. Jalankan environment: `docker-compose up --build`
+2. Jalankan unit & integration tests: `pytest tests/ -q`
+3. Jalankan Locust: `locust -f tests/performance/locustfile.py --host=http://localhost:8001`
+4. Ekspor report Locust dan simpan di `test_results/`.
+
+6.5 Menyiapkan Konfigurasi Lingkungan (`.env`)
+
+Sebelum menjalankan layanan dan pengujian, siapkan konfigurasi lingkungan lokal dari template
+`.env.example`. File `.env.example` disertakan dalam repositori sebagai panduan variabel yang
+d dibutuhkan
+
+Langkah singkat:
+
+1. Salin template ke file lingkungan lokal:
+
+```bash
+cp .env.example .env
+```
+
+2. Buka `.env` dan isi nilai nyata sesuai lingkungan Anda (contoh: `DATABASE_URL`, `REDIS_URL`).
+
+3. Contoh variabel yang tersedia di `.env.example`:
+
+- `REDIS_URL` — URL koneksi Redis, mis. `redis://localhost:6379/0`
+- `DATABASE_URL` — URL koneksi database, mis. `postgresql://user:password@localhost:5432/distributed_db`
+- `SERVICE_HOST` / `SERVICE_PORT` — alamat dan port service yang dijalankan
+- `NODE_ID` — identifier node lokal (opsional)
+- `LOG_LEVEL` — level logging (INFO, DEBUG, ERROR)
+- `SECRET_KEY` — placeholder kunci rahasia (ganti di `.env` lokal)
+
+
+================================================================
+BAB 7 – KESIMPULAN 
+================================================================
+
+7.1 Pencapaian
 
 Tugas ini berhasil mengimplementasikan sistem sinkronisasi terdistribusi yang mencakup
 seluruh core requirements. Berikut adalah ringkasan pencapaian per komponen beserta
 penilaian terhadap kelengkapan implementasinya.
 
-Raft Consensus — Lock Manager (25 poin):
+Raft Consensus — Lock Manager 
 Implementasi lengkap mencakup Leader Election dengan election timeout acak, Log Replication
 dengan AppendEntries dan commit via mayoritas, Safety melalui election restriction,
 recovery node setelah crash, deadlock detection DFS, TTL expiry otomatis, shared dan
 exclusive lock, serta persistensi ke Redis.
 
-Distributed Queue System (20 poin):
+Distributed Queue System 
 Consistent hashing dengan 100 virtual node per server, replication factor 2 untuk fault
 tolerance, at-least-once delivery via redelivery loop dengan ack_deadline, message
 persistence dan recovery dari Redis, serta dukungan multiple producers dan consumers
 secara bersamaan.
 
-Cache Coherence MESI (15 poin):
+Cache Coherence MESI 
 Implementasi lengkap empat state MESI dengan transisi yang benar, dual-path invalidation
 via Raft log dan Redis pub/sub, pilihan LRU menggunakan OrderedDict dan LFU menggunakan
 frequency counter, TTL expiry, dan Prometheus metrics untuk hit rate, miss rate, dan
 ukuran cache.
 
-Containerization (10 poin):
+Containerization 
 Docker Compose dengan 5 service (3 node + Redis + Prometheus opsional), health check pada
 setiap node, environment configuration via .env, Docker network internal, volume
 persistence untuk Redis, dan support penambahan node secara dinamis.
 
-6.2 Tantangan dalam Implementasi
+7.2 Tantangan dalam Implementasi
 
 Beberapa tantangan signifikan ditemui selama proses implementasi. Memahami dan
 mengatasinya menjadi pembelajaran paling berharga dari tugas ini.
@@ -683,7 +831,7 @@ yang hati-hati agar tidak terjadi double-invalidation atau race condition. Solus
 memastikan Redis pub/sub hanya digunakan sebagai notifikasi tambahan, bukan sebagai
 mekanisme consensus utama.
 
-6.3 Kaitan dengan Materi Perkuliahan
+7.3 Kaitan dengan Materi Perkuliahan
 
 Implementasi ini memberikan pemahaman yang jauh lebih dalam terhadap konsep-konsep yang
 dibahas dalam Pertemuan 6 tentang Sinkronisasi. Algoritma Raft merupakan implementasi
@@ -701,7 +849,7 @@ materi, di mana state entry mencerminkan hubungan kausalitas antara nilai lokal 
 di penyimpanan terpusat (Redis).
 
 ================================================================
-BAB 7 – REFERENSI
+BAB 8 – REFERENSI
 ================================================================
 
 Referensi Wajib
@@ -730,7 +878,6 @@ Menjadi referensi utama untuk desain queue system (at-least-once vs exactly-once
 delivery), analisis performa dan scalability, prinsip strong consistency melalui quorum
 write, serta pattern CQRS untuk optimasi read throughput.
 
-Referensi Tambahan
 
 [5] Diego Ongaro dan John Ousterhout. In Search of an Understandable Consensus Algorithm
 (Extended Version). USENIX ATC, 2014. https://raft.github.io/raft.pdf
@@ -749,82 +896,3 @@ queue_node.py.
 Failure Detector. 23rd IEEE SRDS, 2004.
 — Referensi implementasi FailureDetector di failure_detector.py.
 
-[9] Materi Kuliah Pertemuan 6: Sinkronisasi. Sistem Parallel dan Terdistribusi, 2026.
-— Menjadi konteks dan motivasi utama pemilihan algoritma dan desain sistem dalam tugas
-ini.
-
-================================================================
-================================================================
-
-================================================================
-BAB 8 – HASIL PENGUJIAN
-================================================================
-
-8.1 Ringkasan Hasil Unit Test
-
-Semua unit test dijalankan menggunakan `pytest` yang didefinisikan di folder `tests/unit`.
-Hasil ringkasan eksekusi unit test (contoh):
-
-- Total tests: 12
-- Passed: 12
-- Failed: 0
-- Skipped: 0
-
-Cantumkan output lengkap `pytest -q` di lampiran atau sebagai file `test_results/unit_test_output.txt`.
-
-8.2 Hasil Integration Test
-
-Integration test ada di folder `tests/integration`. Jalankan dengan `pytest tests/integration -q`.
-Contoh ringkasan hasil integrasi (sebenarnya):
-
-- test_cache_integration.py: PASSED
-- test_lock_integration.py: PASSED
-- test_queue_integration.py: PASSED
-
-Jika ada kegagalan, sertakan log lengkap pada `test_results/integration_test_output.txt`.
-
-8.3 Hasil Performance Test (Locust)
-
-Jalankan Locust dengan `locust -f tests/performance/locustfile.py --host=http://localhost:8001`.
-Catatan hasil performa yang perlu dicantumkan:
-
-- Konfigurasi pengujian: jumlah user, spawn rate, durasi
-- Throughput (req/s) per operasi
-- P95/P99 latency per operasi
-- Error rate dan contoh error stacktrace jika ada
-
-Simpan laporan Locust sebagai `test_results/locust_report.html` (export dari UI) dan
-ambil screenshot grafik utama (`screenshots/locust_overview.png`).
-
-8.4 Langkah Reproduksi dan Perintah yang Digunakan
-
-Berikan perintah yang jelas untuk mereproduksi pengujian dan menyertakan file hasil:
-
-1. Jalankan environment: `docker-compose up --build`
-2. Jalankan unit & integration tests: `pytest tests/ -q`
-3. Jalankan Locust: `locust -f tests/performance/locustfile.py --host=http://localhost:8001`
-4. Ekspor report Locust dan simpan di `test_results/`.
-
-8.5 Letak dan Penamaan File Screenshot
-
-Tempatkan screenshot hasil testing di folder `screenshots/` pada root proyek dengan aturan penamaan:
-
-- `screenshots/unit_tests_output.png` — output terminal atau screenshot CI
-- `screenshots/integration_tests_output.png` — ringkasan integrasi atau kegagalan
-- `screenshots/locust_overview.png` — tampilan overview grafis Locust
-- `screenshots/prometheus_metrics.png` — grafik metrik Prometheus (opsional)
-
-
-
-"Lihat gambar 2 (`screenshots/unit_tests_output.png`) untuk output `pytest` yang lengkap."
-
-8.6 Lampiran: File Hasil Testing
-
-Sertakan file teks hasil testing di folder `test_results/`:
-
-- `test_results/unit_test_output.txt`
-- `test_results/integration_test_output.txt`
-- `test_results/locust_report.html`
-- `test_results/locust_summary.txt`
-
-================================================================

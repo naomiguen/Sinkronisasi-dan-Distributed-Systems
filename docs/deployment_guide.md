@@ -26,8 +26,8 @@ Panduan ini menjelaskan cara deploy dan menjalankan Distributed Synchronization 
 ### 1. Clone dan Setup
 
 ```bash
-# Clone repository
-git clone <repository-url>
+# Clone repository (clone into local folder name used in this project)
+git clone https://github.com/naomiguen/Sinkronisasi-dan-Distributed-Systems distributed-sync-system
 cd distributed-sync-system
 
 # Salin file konfigurasi

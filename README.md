@@ -6,12 +6,12 @@ Implementasi sistem sinkronisasi terdistribusi untuk mata kuliah **Sistem Parall
 
 Sistem ini mensimulasikan skenario real-world dari distributed systems dengan 4 komponen utama:
 
-| Komponen | Algoritma | Poin |
-|---|---|---|
-| Distributed Lock Manager | Raft Consensus | 25 |
-| Distributed Queue | Consistent Hashing | 20 |
-| Cache Coherence | Protokol MESI | 15 |
-| Containerization | Docker & Compose | 10 |
+| Komponen | Algoritma |
+|---|---|
+| Distributed Lock Manager | Raft Consensus |
+| Distributed Queue | Consistent Hashing |
+| Cache Coherence | Protokol MESI |
+| Containerization | Docker & Compose |
 
 ## Arsitektur
 
@@ -44,6 +44,8 @@ Sistem ini mensimulasikan skenario real-world dari distributed systems dengan 4 
 
 ```bash
 # 1. Clone dan masuk ke direktori
+# clone repository (will clone into local folder `distributed-sync-system`)
+git clone https://github.com/naomiguen/Sinkronisasi-dan-Distributed-Systems distributed-sync-system
 cd distributed-sync-system
 
 # 2. Salin file konfigurasi
